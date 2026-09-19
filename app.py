@@ -883,7 +883,7 @@ def refresh_events():
     total += scrape_whitefish_music()
 
     total += scrape_majestic()
-total = 0
+
     
     print("")
     print(
