@@ -12,7 +12,6 @@ from fastapi.responses import HTMLResponse
 app = FastAPI(title="Flathead Live")
 
 DATABASE = "events.db"
-DEBUG_SCRAPER = True
 
 HEADERS = {
     "User-Agent": (
@@ -58,15 +57,8 @@ def initialize_database():
 
 
 # ============================================================
-# HELPERS
+# EVENT CLASSIFICATION
 # ============================================================
-
-def clean(text):
-    if not text:
-        return ""
-
-    return re.sub(r"\s+", " ", text).strip()
-
 
 def classify(title, text):
     combined = f"{title} {text}".lower()
@@ -106,17 +98,70 @@ def classify(title, text):
         "celebration",
     ]
 
-    if any(x in combined for x in film_terms):
+    if any(term in combined for term in film_terms):
         return "film"
 
-    if any(x in combined for x in music_terms):
+    if any(term in combined for term in music_terms):
         return "music"
 
-    if any(x in combined for x in festival_terms):
+    if any(term in combined for term in festival_terms):
         return "festival"
 
     return "other"
 
+
+# ============================================================
+# TEXT HELPERS
+# ============================================================
+
+def clean(text):
+    if not text:
+        return ""
+
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def extract_date(text):
+    patterns = [
+        r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*\d{4})?",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:,\s*\d{4})?",
+        r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            return match.group(0)
+
+    return ""
+
+
+def extract_time(text):
+    pattern = (
+        r"\b\d{1,2}(?::\d{2})?\s*"
+        r"(?:AM|PM)\b"
+    )
+
+    match = re.search(
+        pattern,
+        text,
+        re.IGNORECASE
+    )
+
+    if match:
+        return match.group(0)
+
+    return ""
+
+
+# ============================================================
+# SAVE EVENT
+# ============================================================
 
 def save_event(
     title,
@@ -129,7 +174,6 @@ def save_event(
     source,
     source_url,
 ):
-
     title = clean(title)
 
     if len(title) < 3:
@@ -170,12 +214,9 @@ def save_event(
 
 # ============================================================
 # EXPLORE WHITEFISH
-#
-# This site already publishes event dates/times and categories.
 # ============================================================
 
 def scrape_explore_whitefish():
-
     url = "https://explorewhitefish.com/events?face=list"
 
     print("Checking Explore Whitefish...")
@@ -186,7 +227,6 @@ def scrape_explore_whitefish():
             headers=HEADERS,
             timeout=30
         )
-
         response.raise_for_status()
 
     except Exception as error:
@@ -200,9 +240,7 @@ def scrape_explore_whitefish():
 
     count = 0
 
-    # Look for event links.
     for link in soup.find_all("a", href=True):
-
         title = clean(
             link.get_text(
                 " ",
@@ -210,14 +248,9 @@ def scrape_explore_whitefish():
             )
         )
 
-        if not title:
-            continue
-
-        # The calendar's event links generally point
-        # toward individual event pages.
         href = link.get("href", "")
 
-        if not href:
+        if not title or not href:
             continue
 
         event_url = urljoin(
@@ -225,7 +258,6 @@ def scrape_explore_whitefish():
             href
         )
 
-        # Get surrounding event text.
         parent = link.parent
 
         if parent:
@@ -238,7 +270,7 @@ def scrape_explore_whitefish():
         else:
             context = title
 
-        if len(context) < len(title) + 5:
+        if len(context) < len(title) + 10:
             if parent and parent.parent:
                 context = clean(
                     parent.parent.get_text(
@@ -247,7 +279,6 @@ def scrape_explore_whitefish():
                     )
                 )
 
-        # We only want actual events.
         category = classify(
             title,
             context
@@ -256,50 +287,9 @@ def scrape_explore_whitefish():
         if category == "other":
             continue
 
-        # Look for a date.
-        date_match = re.search(
-            r"""
-            \b
-            (?:
-                Jan|Feb|Mar|Apr|May|Jun|
-                Jul|Aug|Sep|Oct|Nov|Dec
-            )
-            \s+
-            \d{1,2}
-            (?:,\s*\d{2,4})?
-            """,
-            context,
-            re.IGNORECASE | re.VERBOSE
-        )
+        event_date = extract_date(context)
+        event_time = extract_time(context)
 
-        event_date = (
-            date_match.group(0)
-            if date_match
-            else ""
-        )
-
-        # Look for a time.
-        time_match = re.search(
-            r"""
-            \b
-            \d{1,2}
-            (?::\d{2})?
-            \s*
-            (?:AM|PM)
-            \b
-            """,
-            context,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_time = (
-            time_match.group(0)
-            if time_match
-            else ""
-        )
-
-        # If we don't have a date, don't save it.
-        # This prevents the TBD problem.
         if not event_date:
             continue
 
@@ -323,33 +313,30 @@ def scrape_explore_whitefish():
     )
 
     return count
+
+
 # ============================================================
-# WHITEFISH CHAMBER - LIVE MUSIC
+# WHITEFISH CHAMBER MUSIC
 # ============================================================
 
 def scrape_whitefish_music():
-
     url = "https://business.whitefishchamber.org/events"
 
     print("Checking Whitefish Chamber music...")
 
     try:
-
         response = requests.get(
             url,
             headers=HEADERS,
             timeout=30
         )
-
         response.raise_for_status()
 
     except Exception as error:
-
         print(
             "Whitefish Chamber error:",
             error
         )
-
         return 0
 
     soup = BeautifulSoup(
@@ -359,9 +346,7 @@ def scrape_whitefish_music():
 
     count = 0
 
-    # Find links that look like event listings.
     for link in soup.find_all("a", href=True):
-
         title = clean(
             link.get_text(
                 " ",
@@ -369,10 +354,10 @@ def scrape_whitefish_music():
             )
         )
 
+        href = link.get("href", "")
+
         if not title:
             continue
-
-        href = link.get("href", "")
 
         if "/events/details/" not in href:
             continue
@@ -382,26 +367,24 @@ def scrape_whitefish_music():
             href
         )
 
-        # Get the surrounding event text.
         container = link
 
         for _ in range(5):
+            if not container.parent:
+                break
 
-            if container.parent:
+            container = container.parent
 
-                container = container.parent
-
-                context = clean(
-                    container.get_text(
-                        " ",
-                        strip=True
-                    )
+            context = clean(
+                container.get_text(
+                    " ",
+                    strip=True
                 )
+            )
 
-                if len(context) > len(title) + 20:
-                    break
+            if len(context) > len(title) + 20:
+                break
 
-        # Only interested in music.
         category = classify(
             title,
             context
@@ -410,59 +393,11 @@ def scrape_whitefish_music():
         if category != "music":
             continue
 
-        # ----------------------------------------------------
-        # DATE
-        # ----------------------------------------------------
-
-        date_match = re.search(
-            r"""
-            (?:
-                January|February|March|April|May|June|
-                July|August|September|October|November|December
-            )
-            \s+
-            \d{1,2}
-            (?:,\s*\d{4})?
-            """,
-            context,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_date = (
-            date_match.group(0)
-            if date_match
-            else ""
-        )
-
-        # ----------------------------------------------------
-        # TIME
-        # ----------------------------------------------------
-
-        time_match = re.search(
-            r"""
-            \b
-            \d{1,2}
-            (?::\d{2})?
-            \s*
-            (?:AM|PM)
-            \b
-            """,
-            context,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_time = (
-            time_match.group(0)
-            if time_match
-            else ""
-        )
+        event_date = extract_date(context)
+        event_time = extract_time(context)
 
         if not event_date:
             continue
-
-        # ----------------------------------------------------
-        # VENUE
-        # ----------------------------------------------------
 
         venue = ""
 
@@ -475,20 +410,12 @@ def scrape_whitefish_music():
             "Craggy Range",
             "Sacred Waters",
             "O'Shaughnessy's",
-            "Whitefish Theatre Company",
         ]
 
         for possible_venue in venue_names:
-
             if possible_venue.lower() in context.lower():
-
                 venue = possible_venue
-
                 break
-
-        # ----------------------------------------------------
-        # SAVE
-        # ----------------------------------------------------
 
         save_event(
             title=title,
@@ -505,7 +432,7 @@ def scrape_whitefish_music():
         count += 1
 
         print(
-            "  MUSIC:",
+            "MUSIC:",
             title,
             "|",
             event_date,
@@ -522,12 +449,12 @@ def scrape_whitefish_music():
 
     return count
 
+
 # ============================================================
 # MAJESTIC VALLEY ARENA
 # ============================================================
 
 def scrape_majestic():
-
     url = (
         "https://majesticvalleyarena.com/"
         "venue/majestic-valley-arena/"
@@ -536,22 +463,18 @@ def scrape_majestic():
     print("Checking Majestic Valley Arena...")
 
     try:
-
         response = requests.get(
             url,
             headers=HEADERS,
             timeout=30
         )
-
         response.raise_for_status()
 
     except Exception as error:
-
         print(
             "Majestic Valley Arena error:",
             error
         )
-
         return 0
 
     soup = BeautifulSoup(
@@ -561,17 +484,19 @@ def scrape_majestic():
 
     count = 0
 
-    # WordPress event calendars generally use
-    # event containers/articles.
     containers = soup.select(
-        "article, .tribe-events-calendar-list__event-row"
+        "article, "
+        ".tribe-events-calendar-list__event-row"
     )
 
     for container in containers:
 
         title_element = container.select_one(
             ".tribe-events-calendar-list__event-title a, "
-            "h2 a, h3 a, h2, h3"
+            "h2 a, "
+            "h3 a, "
+            "h2, "
+            "h3"
         )
 
         if not title_element:
@@ -587,27 +512,28 @@ def scrape_majestic():
         if not title:
             continue
 
-        # Event link
         if title_element.name == "a":
             event_url = urljoin(
                 url,
-                title_element.get("href", "")
+                title_element.get(
+                    "href",
+                    ""
+                )
             )
         else:
             anchor = container.select_one(
                 "a[href]"
             )
 
-            event_url = (
-                urljoin(
+            if anchor:
+                event_url = urljoin(
                     url,
                     anchor.get("href")
                 )
-                if anchor
-                else url
-            )
+            else:
+                event_url = url
 
-        text = clean(
+        context = clean(
             container.get_text(
                 " ",
                 strip=True
@@ -616,47 +542,11 @@ def scrape_majestic():
 
         category = classify(
             title,
-            text
+            context
         )
 
-        # Majestic's page has actual calendar dates.
-        date_match = re.search(
-            r"""
-            (?:
-                January|February|March|April|May|June|
-                July|August|September|October|November|December
-            )
-            \s+
-            \d{1,2}
-            """,
-            text,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_date = (
-            date_match.group(0)
-            if date_match
-            else ""
-        )
-
-        time_match = re.search(
-            r"""
-            \b
-            \d{1,2}
-            (?::\d{2})?
-            \s*
-            (?:AM|PM)
-            \b
-            """,
-            text,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_time = (
-            time_match.group(0)
-            if time_match
-            else ""
-        )
+        event_date = extract_date(context)
+        event_time = extract_time(context)
 
         if not event_date:
             continue
@@ -668,7 +558,7 @@ def scrape_majestic():
             category=category,
             event_date=event_date,
             event_time=event_time,
-            description=text,
+            description=context,
             source="Majestic Valley Arena",
             source_url=event_url,
         )
@@ -684,20 +574,15 @@ def scrape_majestic():
 
 
 # ============================================================
-# REFRESH
+# REFRESH ALL EVENTS
 # ============================================================
 
 def refresh_events():
-
     print("")
     print("========================================")
     print("FLATHEAD LIVE REFRESH")
     print("========================================")
 
-    # IMPORTANT:
-    # We do NOT simply add everything forever.
-    # Existing events are cleared before rebuilding
-    # the current event list.
     conn = db()
 
     conn.execute("DELETE FROM events")
@@ -707,12 +592,11 @@ def refresh_events():
 
     total = 0
 
- total += scrape_explore_whitefish()
+    total += scrape_explore_whitefish()
 
-total += scrape_whitefish_music()
+    total += scrape_whitefish_music()
 
-total += scrape_majestic()
-
+    total += scrape_majestic()
 
     print("")
     print(
@@ -729,7 +613,6 @@ total += scrape_majestic()
 
 @app.get("/refresh")
 def refresh():
-
     total = refresh_events()
 
     return {
@@ -746,24 +629,26 @@ def refresh():
 def home(
     category: str = Query("all")
 ):
-
     conn = db()
 
     if category == "all":
-
         rows = conn.execute("""
             SELECT *
             FROM events
-            ORDER BY event_date, event_time, title
+            ORDER BY
+                event_date,
+                event_time,
+                title
         """).fetchall()
-
     else:
-
         rows = conn.execute("""
             SELECT *
             FROM events
             WHERE category = ?
-            ORDER BY event_date, event_time, title
+            ORDER BY
+                event_date,
+                event_time,
+                title
         """, (
             category,
         )).fetchall()
@@ -776,13 +661,10 @@ def home(
 
         if event["category"] == "music":
             icon = "🎵"
-
         elif event["category"] == "film":
             icon = "🎬"
-
         elif event["category"] == "festival":
             icon = "🎪"
-
         else:
             icon = "📍"
 
@@ -793,6 +675,11 @@ def home(
                 " · " +
                 event["event_time"]
             )
+
+        venue = event["venue"]
+
+        if not venue:
+            venue = event["city"]
 
         cards.append(f"""
         <div class="event">
@@ -808,7 +695,7 @@ def home(
                 </h2>
 
                 <div class="location">
-                    {event["venue"] or event["city"]}
+                    {venue}
                 </div>
 
                 <div class="date">
@@ -822,6 +709,7 @@ def home(
                 <a
                     href="{event["source_url"]}"
                     target="_blank"
+                    rel="noopener"
                 >
                     View original listing →
                 </a>
@@ -831,13 +719,11 @@ def home(
         </div>
         """)
 
-    event_html = "".join(cards)
-
-    if not event_html:
-
+    if cards:
+        event_html = "".join(cards)
+    else:
         event_html = """
         <div class="empty">
-
             <div style="font-size:42px">
                 🔎
             </div>
@@ -847,9 +733,8 @@ def home(
             </h2>
 
             <p>
-                Try the refresh button.
+                Open /refresh to collect events.
             </p>
-
         </div>
         """
 
@@ -866,9 +751,7 @@ def home(
 <meta name="theme-color"
       content="#08111f">
 
-<title>
-Flathead Live
-</title>
+<title>Flathead Live</title>
 
 <style>
 
@@ -877,7 +760,6 @@ Flathead Live
 }}
 
 body {{
-
     margin: 0;
 
     background:
@@ -894,152 +776,86 @@ body {{
         BlinkMacSystemFont,
         "Segoe UI",
         sans-serif;
-
 }}
 
 .container {{
-
     max-width: 760px;
-
     margin: auto;
-
-    padding:
-        25px
-        18px
-        60px;
-
+    padding: 25px 18px 60px;
 }}
 
 h1 {{
-
     font-size: 38px;
-
     margin: 0;
-
 }}
 
 .subtitle {{
-
     color: #94a3b8;
-
-    margin:
-        4px
-        0
-        22px;
-
+    margin: 4px 0 22px;
 }}
 
 .filters {{
-
     display: flex;
-
     gap: 8px;
-
     overflow-x: auto;
-
     padding-bottom: 18px;
-
 }}
 
 .filters a {{
-
     background: #263449;
-
     color: white;
-
     text-decoration: none;
-
-    padding:
-        9px
-        15px;
-
+    padding: 9px 15px;
     border-radius: 999px;
-
     white-space: nowrap;
-
 }}
 
 .event {{
-
     display: flex;
-
     gap: 16px;
-
     background: #1c2838;
-
-    border:
-        1px solid
-        #2c3b4f;
-
+    border: 1px solid #2c3b4f;
     border-radius: 17px;
-
     padding: 18px;
-
     margin-bottom: 14px;
-
 }}
 
 .icon {{
-
     font-size: 30px;
-
 }}
 
 .content {{
-
     min-width: 0;
-
 }}
 
 h2 {{
-
     font-size: 19px;
-
-    margin:
-        0
-        0
-        6px;
-
+    margin: 0 0 6px;
 }}
 
 .location {{
-
     color: #cbd5e1;
-
 }}
 
 .date {{
-
     color: #60a5fa;
-
     font-weight: 600;
-
     margin-top: 5px;
-
 }}
 
 p {{
-
     color: #cbd5e1;
-
     line-height: 1.45;
-
 }}
 
 a {{
-
     color: #60a5fa;
-
 }}
 
 .empty {{
-
     text-align: center;
-
     padding: 60px 20px;
-
     color: #94a3b8;
-
 }}
 
 </style>
@@ -1089,12 +905,11 @@ All
 
 
 # ============================================================
-# HEALTH
+# HEALTH CHECK
 # ============================================================
 
 @app.get("/health")
 def health():
-
     return {
         "status": "online",
         "app": "Flathead Live",
