@@ -323,7 +323,204 @@ def scrape_explore_whitefish():
     )
 
     return count
+# ============================================================
+# WHITEFISH CHAMBER - LIVE MUSIC
+# ============================================================
 
+def scrape_whitefish_music():
+
+    url = "https://business.whitefishchamber.org/events"
+
+    print("Checking Whitefish Chamber music...")
+
+    try:
+
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+    except Exception as error:
+
+        print(
+            "Whitefish Chamber error:",
+            error
+        )
+
+        return 0
+
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser"
+    )
+
+    count = 0
+
+    # Find links that look like event listings.
+    for link in soup.find_all("a", href=True):
+
+        title = clean(
+            link.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if not title:
+            continue
+
+        href = link.get("href", "")
+
+        if "/events/details/" not in href:
+            continue
+
+        event_url = urljoin(
+            url,
+            href
+        )
+
+        # Get the surrounding event text.
+        container = link
+
+        for _ in range(5):
+
+            if container.parent:
+
+                container = container.parent
+
+                context = clean(
+                    container.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if len(context) > len(title) + 20:
+                    break
+
+        # Only interested in music.
+        category = classify(
+            title,
+            context
+        )
+
+        if category != "music":
+            continue
+
+        # ----------------------------------------------------
+        # DATE
+        # ----------------------------------------------------
+
+        date_match = re.search(
+            r"""
+            (?:
+                January|February|March|April|May|June|
+                July|August|September|October|November|December
+            )
+            \s+
+            \d{1,2}
+            (?:,\s*\d{4})?
+            """,
+            context,
+            re.IGNORECASE | re.VERBOSE
+        )
+
+        event_date = (
+            date_match.group(0)
+            if date_match
+            else ""
+        )
+
+        # ----------------------------------------------------
+        # TIME
+        # ----------------------------------------------------
+
+        time_match = re.search(
+            r"""
+            \b
+            \d{1,2}
+            (?::\d{2})?
+            \s*
+            (?:AM|PM)
+            \b
+            """,
+            context,
+            re.IGNORECASE | re.VERBOSE
+        )
+
+        event_time = (
+            time_match.group(0)
+            if time_match
+            else ""
+        )
+
+        if not event_date:
+            continue
+
+        # ----------------------------------------------------
+        # VENUE
+        # ----------------------------------------------------
+
+        venue = ""
+
+        venue_names = [
+            "Thirty Eight",
+            "The Boat Club",
+            "Tupelo",
+            "Firebrand",
+            "Great Northern",
+            "Craggy Range",
+            "Sacred Waters",
+            "O'Shaughnessy's",
+            "Whitefish Theatre Company",
+        ]
+
+        for possible_venue in venue_names:
+
+            if possible_venue.lower() in context.lower():
+
+                venue = possible_venue
+
+                break
+
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
+
+        save_event(
+            title=title,
+            venue=venue,
+            city="Whitefish",
+            category="music",
+            event_date=event_date,
+            event_time=event_time,
+            description=context,
+            source="Whitefish Chamber",
+            source_url=event_url,
+        )
+
+        count += 1
+
+        print(
+            "  MUSIC:",
+            title,
+            "|",
+            event_date,
+            "|",
+            event_time,
+            "|",
+            venue
+        )
+
+    print(
+        "Whitefish Chamber music processed:",
+        count
+    )
+
+    return count
 
 # ============================================================
 # MAJESTIC VALLEY ARENA
