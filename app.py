@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse
 app = FastAPI(title="Flathead Live")
 
 DATABASE = "events.db"
+DEBUG_SCRAPER = True
 
 HEADERS = {
     "User-Agent": (
