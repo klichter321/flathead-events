@@ -603,6 +603,10 @@ def scrape_flathead_events():
         response.text,
         "html.parser"
     )
+    
+print("FLATHEAD DEBUG STATUS:", response.status_code)
+print("FLATHEAD DEBUG LENGTH:", len(response.text))
+print("FLATHEAD DEBUG TITLE:", soup.title.get_text(strip=True) if soup.title else "NO TITLE")
 
     count = 0
 
