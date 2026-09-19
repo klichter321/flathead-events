@@ -571,6 +571,292 @@ def scrape_majestic():
     )
 
     return count
+# ============================================================
+# FLATHEAD EVENTS.NET
+# ============================================================
+
+def scrape_flathead_events():
+
+    url = "https://www.flatheadevents.net/"
+
+    print("Checking FlatheadEvents.net...")
+
+    try:
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        response.raise_for_status()
+
+    except Exception as error:
+
+        print(
+            "FlatheadEvents.net error:",
+            error
+        )
+
+        return 0
+
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser"
+    )
+
+    count = 0
+
+    # FlatheadEvents has event links and displays
+    # the date, time, venue, and category around
+    # each listing.
+    for link in soup.find_all("a", href=True):
+
+        title = clean(
+            link.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        href = link.get("href", "")
+
+        if not title:
+            continue
+
+        # We want actual event "VIEW" links.
+        if title.upper() != "VIEW":
+            continue
+
+        event_url = urljoin(
+            url,
+            href
+        )
+
+        # Walk upward to find the event listing.
+        container = link
+
+        context = ""
+
+        for _ in range(6):
+
+            if not container.parent:
+                break
+
+            container = container.parent
+
+            context = clean(
+                container.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+            # A real event block should contain
+            # more information than just VIEW.
+            if len(context) > 50:
+                break
+
+        if not context:
+            continue
+
+        # ----------------------------------------------------
+        # CATEGORY
+        # ----------------------------------------------------
+
+        category = classify(
+            "",
+            context
+        )
+
+        if category == "other":
+            continue
+
+        # ----------------------------------------------------
+        # DATE
+        # ----------------------------------------------------
+
+        date_patterns = [
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+            r"\s+\d{1,2}(?:,\s*\d{4})?",
+
+            r"\b(?:January|February|March|April|May|June|July|"
+            r"August|September|October|November|December)"
+            r"\s+\d{1,2}(?:,\s*\d{4})?",
+        ]
+
+        event_date = ""
+
+        for pattern in date_patterns:
+
+            match = re.search(
+                pattern,
+                context,
+                re.IGNORECASE
+            )
+
+            if match:
+
+                event_date = match.group(0)
+
+                break
+
+        if not event_date:
+            continue
+
+        # ----------------------------------------------------
+        # TIME
+        # ----------------------------------------------------
+
+        time_match = re.search(
+            r"\b\d{1,2}(?::\d{2})?\s*(?:AM|PM)\b",
+            context,
+            re.IGNORECASE
+        )
+
+        event_time = ""
+
+        if time_match:
+            event_time = time_match.group(0)
+
+        # ----------------------------------------------------
+        # VENUES
+        # ----------------------------------------------------
+
+        venue_names = [
+            "Majestic Valley Arena",
+            "Wachholz College Center",
+            "Thirty Eight Central",
+            "The Boat Club",
+            "The Lodge at Whitefish Lake",
+            "Great Northern Bar",
+            "The Raven",
+            "The Firebrand Hotel & Restaurant",
+            "Firebrand",
+            "Abayance Bay Marina",
+            "River View Bar",
+            "Water's Edge Winery and Bistro",
+            "Patriotic American Brewery",
+            "Flathead County Fairgrounds",
+            "Rebecca Farm",
+            "Blue Moon Arena",
+        ]
+
+        venue = ""
+
+        for possible_venue in venue_names:
+
+            if possible_venue.lower() in context.lower():
+
+                venue = possible_venue
+
+                break
+
+        # ----------------------------------------------------
+        # FIND EVENT TITLE
+        # ----------------------------------------------------
+
+        title = ""
+
+        # Look for headings inside the event block.
+        title_element = container.select_one(
+            "h1, h2, h3, h4, h5, "
+            ".event-title, "
+            "[class*='title']"
+        )
+
+        if title_element:
+
+            title = clean(
+                title_element.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        # If no heading was found, try links other than
+        # the VIEW link.
+        if not title:
+
+            for other_link in container.find_all(
+                "a",
+                href=True
+            ):
+
+                possible_title = clean(
+                    other_link.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+                if (
+                    possible_title
+                    and possible_title.upper() != "VIEW"
+                    and len(possible_title) >= 5
+                ):
+
+                    title = possible_title
+
+                    break
+
+        if not title:
+            continue
+
+        # Don't accidentally save navigation links.
+        bad_titles = [
+            "home",
+            "music",
+            "art",
+            "sports",
+            "food",
+            "education",
+            "government",
+            "business",
+            "special events",
+            "search events",
+            "submit an event",
+        ]
+
+        if title.lower() in bad_titles:
+            continue
+
+        # ----------------------------------------------------
+        # SAVE
+        # ----------------------------------------------------
+
+        save_event(
+            title=title,
+            venue=venue,
+            city="Flathead Valley",
+            category=category,
+            event_date=event_date,
+            event_time=event_time,
+            description=context,
+            source="FlatheadEvents.net",
+            source_url=event_url,
+        )
+
+        count += 1
+
+        print(
+            "FLATHEAD EVENTS:",
+            title,
+            "|",
+            event_date,
+            "|",
+            event_time,
+            "|",
+            venue,
+            "|",
+            category
+        )
+
+    print(
+        "FlatheadEvents.net events processed:",
+        count
+    )
+
+    return count
 
 
 # ============================================================
