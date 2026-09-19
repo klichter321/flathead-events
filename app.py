@@ -707,9 +707,12 @@ def refresh_events():
 
     total = 0
 
-    total += scrape_explore_whitefish()
+ total += scrape_explore_whitefish()
 
-    total += scrape_majestic()
+total += scrape_whitefish_music()
+
+total += scrape_majestic()
+
 
     print("")
     print(
