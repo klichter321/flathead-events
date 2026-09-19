@@ -1,6 +1,6 @@
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin
 
 import requests
@@ -17,15 +17,12 @@ app = FastAPI(title="Flathead Live")
 
 DATABASE = "events.db"
 
-SOURCES = {
-    "Explore Whitefish": {
-        "url": "https://explorewhitefish.com/events?face=list",
-        "city": "Whitefish",
-    },
-    "Whitefish Chamber": {
-        "url": "https://business.whitefishchamber.org/events",
-        "city": "Whitefish",
-    },
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 "
+        "Chrome/140.0 Safari/537.36"
+    )
 }
 
 
@@ -45,15 +42,20 @@ def initialize_database():
     connection.execute("""
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+
             title TEXT NOT NULL,
             venue TEXT,
             city TEXT,
             category TEXT NOT NULL,
+
             event_date TEXT,
             description TEXT,
+
             source TEXT NOT NULL,
             source_url TEXT NOT NULL,
+
             created_at TEXT NOT NULL,
+
             UNIQUE(title, event_date, source_url)
         )
     """)
@@ -63,11 +65,12 @@ def initialize_database():
 
 
 # ============================================================
-# EVENT CLASSIFICATION
+# CLASSIFICATION
 # ============================================================
 
-MUSIC_WORDS = [
+MUSIC_TERMS = [
     "live music",
+    "live music at",
     "concert",
     "songwriter",
     "songwriters",
@@ -78,12 +81,14 @@ MUSIC_WORDS = [
     "symphony",
     "piano",
     "dueling pianos",
-    "dj ",
+    "dj",
     "acoustic",
     "band",
+    "worship",
+    "country music",
 ]
 
-FILM_WORDS = [
+FILM_TERMS = [
     "film festival",
     "filmfest",
     "film screening",
@@ -93,9 +98,11 @@ FILM_WORDS = [
     "cinema",
     "paddling film",
     "fly fishing film",
+    "mountain film",
+    "adventure film",
 ]
 
-FESTIVAL_WORDS = [
+FESTIVAL_TERMS = [
     "festival",
     "fest",
     "fair",
@@ -105,33 +112,104 @@ FESTIVAL_WORDS = [
 
 
 def classify_event(title, description=""):
+
     text = f"{title} {description}".lower()
 
-    if any(word in text for word in FILM_WORDS):
+    if any(term in text for term in FILM_TERMS):
         return "film"
 
-    if any(word in text for word in MUSIC_WORDS):
+    if any(term in text for term in MUSIC_TERMS):
         return "music"
 
-    if any(word in text for word in FESTIVAL_WORDS):
+    if any(term in text for term in FESTIVAL_TERMS):
         return "festival"
 
     return "other"
 
 
 # ============================================================
-# TEXT CLEANING
+# HELPERS
 # ============================================================
 
 def clean_text(value):
+
     if not value:
         return ""
 
-    return re.sub(r"\s+", " ", value).strip()
+    return re.sub(
+        r"\s+",
+        " ",
+        value
+    ).strip()
+
+
+def is_probably_event_title(title):
+
+    if not title:
+        return False
+
+    title = title.strip()
+
+    if len(title) < 4:
+        return False
+
+    if len(title) > 180:
+        return False
+
+    bad_words = [
+        "login",
+        "sign in",
+        "register",
+        "contact us",
+        "privacy policy",
+        "terms of use",
+        "learn more",
+        "read more",
+        "directions",
+        "get directions",
+    ]
+
+    lower = title.lower()
+
+    if any(word in lower for word in bad_words):
+        return False
+
+    return True
+
+
+def extract_date(text):
+
+    patterns = [
+
+        # September 19, 2026
+        r"\b(?:January|February|March|April|May|June|July|"
+        r"August|September|October|November|December)"
+        r"\s+\d{1,2}(?:,\s*\d{4})?",
+
+        # Sep 19, 2026
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+        r"\s+\d{1,2}(?:,\s*\d{4})?",
+
+        # 9/19/2026
+        r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",
+    ]
+
+    for pattern in patterns:
+
+        match = re.search(
+            pattern,
+            text,
+            re.IGNORECASE
+        )
+
+        if match:
+            return match.group(0)
+
+    return ""
 
 
 # ============================================================
-# SAVE EVENT
+# DATABASE SAVE
 # ============================================================
 
 def save_event(
@@ -144,6 +222,12 @@ def save_event(
     source,
     source_url,
 ):
+
+    title = clean_text(title)
+
+    if not is_probably_event_title(title):
+        return
+
     connection = get_db()
 
     connection.execute("""
@@ -161,11 +245,11 @@ def save_event(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         title,
-        venue,
-        city,
+        clean_text(venue),
+        clean_text(city),
         category,
-        event_date,
-        description,
+        clean_text(event_date),
+        clean_text(description),
         source,
         source_url,
         datetime.now(timezone.utc).isoformat(),
@@ -176,146 +260,222 @@ def save_event(
 
 
 # ============================================================
-# GENERIC EVENT SCRAPER
+# GENERIC LINK-BASED SCRAPER
 # ============================================================
 
-def scrape_source(source_name, source_info):
-    url = source_info["url"]
-    city = source_info["city"]
+def scrape_links(
+    source_name,
+    url,
+    city,
+    default_venue="",
+):
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 "
-            "(compatible; FlatheadLive/1.0)"
-        )
-    }
+    print("")
+    print("========================================")
+    print(f"Checking: {source_name}")
+    print(url)
+    print("========================================")
 
     try:
+
         response = requests.get(
             url,
-            headers=headers,
-            timeout=20,
+            headers=HEADERS,
+            timeout=30,
         )
 
         response.raise_for_status()
 
     except Exception as error:
-        print(f"Could not download {source_name}: {error}")
-        return
 
-    soup = BeautifulSoup(response.text, "html.parser")
-
-    # Try common event-card formats.
-    cards = soup.select(
-        "article, "
-        ".event, "
-        ".event-card, "
-        ".event-item, "
-        "[class*='event-card'], "
-        "[class*='event-item']"
-    )
-
-    print(
-        f"{source_name}: found {len(cards)} possible event cards"
-    )
-
-    for card in cards:
-
-        text = clean_text(
-            card.get_text(" ", strip=True)
+        print(
+            f"ERROR downloading {source_name}: "
+            f"{error}"
         )
 
-        if len(text) < 10:
+        return 0
+
+    soup = BeautifulSoup(
+        response.text,
+        "html.parser"
+    )
+
+    found = 0
+
+    # Look at every link on the page.
+    # This works better with the event-calendar
+    # structures used by several local sites.
+    for link in soup.find_all("a", href=True):
+
+        title = clean_text(
+            link.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if not is_probably_event_title(title):
             continue
 
-        # Try to identify the event title.
-        title_element = card.select_one(
-            "h1, h2, h3, h4, "
-            ".event-title, "
-            ".title, "
-            "[class*='title']"
+        href = link.get("href")
+
+        if not href:
+            continue
+
+        event_url = urljoin(
+            url,
+            href
         )
 
-        if title_element:
-            title = clean_text(
-                title_element.get_text(
+        # Get text surrounding the link.
+        parent = link.parent
+
+        if parent:
+            context = clean_text(
+                parent.get_text(
                     " ",
                     strip=True
                 )
             )
         else:
-            title = text[:150]
+            context = title
 
-        if not title:
-            continue
+        # Sometimes the event's date is in a nearby
+        # parent element rather than in the link.
+        if len(context) < len(title) + 10:
 
-        # Find event URL.
-        link = card.select_one("a[href]")
-
-        if link:
-            event_url = urljoin(
-                url,
-                link.get("href")
+            grandparent = (
+                parent.parent
+                if parent
+                else None
             )
-        else:
-            event_url = url
+
+            if grandparent:
+
+                context = clean_text(
+                    grandparent.get_text(
+                        " ",
+                        strip=True
+                    )
+                )
+
+        event_date = extract_date(context)
 
         category = classify_event(
             title,
-            text
+            context
         )
 
-        # Look for a date/time in the event text.
-        date_match = re.search(
-            r"""
-            (?:
-                Jan|Feb|Mar|Apr|May|Jun|
-                Jul|Aug|Sep|Oct|Nov|Dec
-            )
-            \s+
-            \d{1,2}
-            (?:,\s*\d{4})?
-            """,
-            text,
-            re.IGNORECASE | re.VERBOSE
-        )
-
-        event_date = (
-            date_match.group(0)
-            if date_match
-            else ""
-        )
+        # Only collect things we're interested in.
+        if category == "other":
+            continue
 
         save_event(
             title=title,
-            venue="",
+            venue=default_venue,
             city=city,
             category=category,
             event_date=event_date,
-            description=text,
+            description=context,
             source=source_name,
             source_url=event_url,
         )
 
+        found += 1
+
+    print(
+        f"{source_name}: {found} events identified"
+    )
+
+    return found
+
 
 # ============================================================
-# REFRESH EVENTS
+# WHITEFISH CHAMBER
+# ============================================================
+
+def scrape_whitefish_chamber():
+
+    today = datetime.now().date()
+
+    end_date = today + timedelta(days=120)
+
+    url = (
+        "https://business.whitefishchamber.org/events"
+        f"?from={today.month}/{today.day}/{today.year}"
+        f"&o=alpha"
+        f"&to={end_date.month}/{end_date.day}/{end_date.year}"
+    )
+
+    return scrape_links(
+        source_name="Whitefish Chamber",
+        url=url,
+        city="Whitefish",
+    )
+
+
+# ============================================================
+# EXPLORE WHITEFISH
+# ============================================================
+
+def scrape_explore_whitefish():
+
+    url = (
+        "https://explorewhitefish.com/events"
+        "?face=list"
+    )
+
+    return scrape_links(
+        source_name="Explore Whitefish",
+        url=url,
+        city="Whitefish",
+    )
+
+
+# ============================================================
+# MAJESTIC VALLEY ARENA
+# ============================================================
+
+def scrape_majestic():
+
+    url = (
+        "https://majesticvalleyarena.com/"
+        "venue/majestic-valley-arena/"
+    )
+
+    return scrape_links(
+        source_name="Majestic Valley Arena",
+        url=url,
+        city="Kalispell",
+        default_venue="Majestic Valley Arena",
+    )
+
+
+# ============================================================
+# REFRESH EVERYTHING
 # ============================================================
 
 def refresh_events():
 
-    print("================================")
-    print("Refreshing Flathead events...")
-    print("================================")
+    print("")
+    print("########################################")
+    print("# FLATHEAD LIVE EVENT REFRESH")
+    print("########################################")
 
-    for source_name, source_info in SOURCES.items():
+    total = 0
 
-        scrape_source(
-            source_name,
-            source_info
-        )
+    total += scrape_whitefish_chamber()
 
-    print("Refresh complete.")
+    total += scrape_explore_whitefish()
+
+    total += scrape_majestic()
+
+    print("")
+    print(
+        f"REFRESH FINISHED: {total} event listings processed"
+    )
+
+    return total
 
 
 # ============================================================
@@ -334,7 +494,13 @@ def home(
         events = connection.execute("""
             SELECT *
             FROM events
-            ORDER BY event_date, title
+            ORDER BY
+                CASE
+                    WHEN event_date = '' THEN 1
+                    ELSE 0
+                END,
+                event_date,
+                title
         """).fetchall()
 
     else:
@@ -343,7 +509,13 @@ def home(
             SELECT *
             FROM events
             WHERE category = ?
-            ORDER BY event_date, title
+            ORDER BY
+                CASE
+                    WHEN event_date = '' THEN 1
+                    ELSE 0
+                END,
+                event_date,
+                title
         """, (
             category,
         )).fetchall()
@@ -366,6 +538,13 @@ def home(
         else:
             icon = "📍"
 
+        venue_text = ""
+
+        if event["venue"]:
+            venue_text = (
+                f" · {event['venue']}"
+            )
+
         cards.append(f"""
         <div class="event">
 
@@ -373,16 +552,15 @@ def home(
                 {icon}
             </div>
 
-            <div class="event-content">
+            <div class="content">
 
                 <h2>
                     {event["title"]}
                 </h2>
 
                 <div class="location">
-                    {event["city"] or "Flathead Valley"}
-                    {(" · " + event["venue"])
-                     if event["venue"] else ""}
+                    {event["city"]}
+                    {venue_text}
                 </div>
 
                 <div class="date">
@@ -390,7 +568,7 @@ def home(
                 </div>
 
                 <p>
-                    {event["description"][:300]}
+                    {event["description"][:350]}
                 </p>
 
                 <a
@@ -398,7 +576,7 @@ def home(
                     target="_blank"
                     rel="noopener"
                 >
-                    Original event →
+                    View original listing →
                 </a>
 
             </div>
@@ -406,12 +584,27 @@ def home(
         </div>
         """)
 
-    event_html = "".join(cards)
+    if cards:
 
-    if not event_html:
+        event_html = "".join(cards)
+
+    else:
+
         event_html = """
         <div class="empty">
-            No events found yet.
+
+            <div style="font-size:40px">
+                🔎
+            </div>
+
+            <h2>
+                No events found yet
+            </h2>
+
+            <p>
+                Try refreshing the event database.
+            </p>
+
         </div>
         """
 
@@ -425,7 +618,12 @@ def home(
 <meta name="viewport"
       content="width=device-width, initial-scale=1">
 
-<title>Flathead Live</title>
+<meta name="theme-color"
+      content="#08111f">
+
+<title>
+    Flathead Live
+</title>
 
 <style>
 
@@ -440,8 +638,8 @@ body {{
     background:
         linear-gradient(
             180deg,
-            #07111f,
-            #111827
+            #07111f 0%,
+            #111827 100%
         );
 
     color: white;
@@ -452,31 +650,38 @@ body {{
         "Segoe UI",
         sans-serif;
 
+    min-height: 100vh;
 }}
 
 .container {{
 
-    max-width: 750px;
+    max-width: 760px;
 
     margin: auto;
 
-    padding: 24px 18px 50px;
+    padding:
+        24px
+        18px
+        60px;
 
 }}
 
 h1 {{
 
-    font-size: 36px;
+    font-size: 38px;
 
-    margin-bottom: 4px;
+    margin:
+        0
+        0
+        5px;
 
 }}
 
 .subtitle {{
 
-    color: #9ca3af;
+    color: #94a3b8;
 
-    margin-bottom: 25px;
+    margin-bottom: 24px;
 
 }}
 
@@ -488,23 +693,25 @@ h1 {{
 
     overflow-x: auto;
 
-    padding-bottom: 15px;
+    padding-bottom: 18px;
 
 }}
 
 .filters a {{
 
-    flex-shrink: 0;
+    color: white;
 
     text-decoration: none;
 
-    color: white;
-
     background: #263449;
 
-    padding: 9px 15px;
+    padding:
+        9px
+        15px;
 
     border-radius: 999px;
+
+    white-space: nowrap;
 
 }}
 
@@ -512,15 +719,23 @@ h1 {{
 
     display: flex;
 
-    gap: 15px;
+    gap: 16px;
 
     background: #1c2838;
 
-    border-radius: 16px;
+    border:
+        1px solid
+        #29384c;
+
+    border-radius: 17px;
 
     padding: 18px;
 
     margin-bottom: 14px;
+
+    box-shadow:
+        0 4px 15px
+        rgba(0,0,0,.15);
 
 }}
 
@@ -528,9 +743,11 @@ h1 {{
 
     font-size: 30px;
 
+    min-width: 34px;
+
 }}
 
-.event-content {{
+.content {{
 
     min-width: 0;
 
@@ -540,10 +757,12 @@ h2 {{
 
     font-size: 19px;
 
+    line-height: 1.25;
+
     margin:
         0
         0
-        5px;
+        6px;
 
 }}
 
@@ -558,6 +777,8 @@ h2 {{
     color: #60a5fa;
 
     margin-top: 5px;
+
+    font-weight: 600;
 
 }}
 
@@ -579,9 +800,29 @@ a {{
 
     text-align: center;
 
-    padding: 50px;
+    padding: 60px 20px;
 
-    color: #9ca3af;
+    color: #94a3b8;
+
+}}
+
+.refresh {{
+
+    display: inline-block;
+
+    margin-top: 10px;
+
+    padding:
+        10px
+        16px;
+
+    border-radius: 10px;
+
+    background: #2563eb;
+
+    color: white;
+
+    text-decoration: none;
 
 }}
 
@@ -632,6 +873,22 @@ a {{
 
 
 # ============================================================
+# MANUAL REFRESH ENDPOINT
+# ============================================================
+
+@app.get("/refresh")
+def manual_refresh():
+
+    total = refresh_events()
+
+    return {
+        "status": "success",
+        "events_processed": total,
+        "message": "Event sources refreshed."
+    }
+
+
+# ============================================================
 # HEALTH CHECK
 # ============================================================
 
@@ -643,7 +900,7 @@ def health():
         "app": "Flathead Live",
         "time": datetime.now(
             timezone.utc
-        ).isoformat()
+        ).isoformat(),
     }
 
 
@@ -652,3 +909,11 @@ def health():
 # ============================================================
 
 initialize_database()
+
+# Collect events when the server starts.
+try:
+    refresh_events()
+except Exception as error:
+    print(
+        f"Initial event refresh failed: {error}"
+    )
