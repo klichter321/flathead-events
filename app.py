@@ -599,7 +599,7 @@ def scrape_flathead_events():
 
         return 0
 
-        soup = BeautifulSoup(
+    soup = BeautifulSoup(
         response.text,
         "html.parser"
     )
