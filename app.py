@@ -599,16 +599,30 @@ def scrape_flathead_events():
 
         return 0
 
-    soup = BeautifulSoup(
+        soup = BeautifulSoup(
         response.text,
         "html.parser"
     )
-    
-print("FLATHEAD DEBUG STATUS:", response.status_code)
-print("FLATHEAD DEBUG LENGTH:", len(response.text))
-print("FLATHEAD DEBUG TITLE:", soup.title.get_text(strip=True) if soup.title else "NO TITLE")
+
+    print(
+        "FLATHEAD DEBUG STATUS:",
+        response.status_code
+    )
+
+    print(
+        "FLATHEAD DEBUG LENGTH:",
+        len(response.text)
+    )
+
+    print(
+        "FLATHEAD DEBUG TITLE:",
+        soup.title.get_text(strip=True)
+        if soup.title
+        else "NO TITLE"
+    )
 
     count = 0
+
 
     # FlatheadEvents has event links and displays
     # the date, time, venue, and category around
